@@ -1,101 +1,161 @@
-import Image from "next/image";
+"use client";
+import { useCallback } from "react";
+import SplitLayout from "@/components/layout/SplitLayout";
+import ConversationInput from "@/components/left/ConversationInput";
+import PromptCardList from "@/components/left/PromptCardList";
+import HistoryPicker from "@/components/left/HistoryPicker";
+import ThumbnailStrip from "@/components/right/ThumbnailStrip";
+import SlidePreview from "@/components/right/SlidePreview";
+import ExportButton from "@/components/shared/ExportButton";
+import { usePptStore } from "@/store/usePptStore";
+import { fetchOutline, streamSlides, regenerateSlide } from "@/lib/api";
+import { saveProject } from "@/lib/db";
+import { getDeviceId } from "@/lib/deviceId";
+import type { ProjectRecord, Slide } from "@/types";
 
 export default function Home() {
-  return (
-    <div className="grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20 font-[family-name:var(--font-geist-sans)]">
-      <main className="flex flex-col gap-8 row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="https://nextjs.org/icons/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="list-inside list-decimal text-sm text-center sm:text-left font-[family-name:var(--font-geist-mono)]">
-          <li className="mb-2">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] px-1 py-0.5 rounded font-semibold">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li>Save and see your changes instantly.</li>
-        </ol>
+  const {
+    slides,
+    outline,
+    description,
+    selectedSlideIndex,
+    isGeneratingOutline,
+    isGeneratingSlides,
+    generatingSlideIds,
+    setDescription,
+    setOutline,
+    setSlides,
+    appendSlide,
+    updateSlide,
+    selectSlide,
+    setIsGeneratingOutline,
+    setIsGeneratingSlides,
+    setSlideGenerating,
+    loadProject,
+    setCurrentProject,
+  } = usePptStore();
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="https://nextjs.org/icons/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:min-w-44"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
-        </div>
-      </main>
-      <footer className="row-start-3 flex gap-6 flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="https://nextjs.org/icons/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="https://nextjs.org/icons/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="https://nextjs.org/icons/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+  const currentSlide = slides[selectedSlideIndex] ?? null;
+  const isLoading = isGeneratingOutline || isGeneratingSlides;
+
+  const handleSubmit = useCallback(
+    async (desc: string) => {
+      setDescription(desc);
+      setIsGeneratingOutline(true);
+      setSlides([]);
+
+      try {
+        const outlineItems = await fetchOutline(desc);
+        setOutline(outlineItems);
+        setIsGeneratingOutline(false);
+
+        setIsGeneratingSlides(true);
+        const received: Slide[] = [];
+
+        for await (const slide of streamSlides(outlineItems, desc)) {
+          appendSlide(slide);
+          received.push(slide);
+        }
+
+        const deviceId = getDeviceId();
+        const project: ProjectRecord = {
+          id: crypto.randomUUID(),
+          deviceId,
+          title: desc.slice(0, 60),
+          slides: received,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+        await saveProject(project);
+        setCurrentProject(project);
+      } catch (e) {
+        console.error(e);
+        alert("生成失败，请检查网络或 API Key 后重试");
+      } finally {
+        setIsGeneratingOutline(false);
+        setIsGeneratingSlides(false);
+      }
+    },
+    [appendSlide, setCurrentProject, setDescription, setIsGeneratingOutline, setIsGeneratingSlides, setOutline, setSlides]
+  );
+
+  const handleRegenerate = useCallback(
+    async (slide: Slide) => {
+      setSlideGenerating(slide.id, true);
+      try {
+        const newSlide = await regenerateSlide(
+          slide.id,
+          slide.prompt,
+          slides.indexOf(slide),
+          description
+        );
+        updateSlide(slide.id, newSlide);
+      } catch (e) {
+        console.error(e);
+        alert("重新生成失败");
+      } finally {
+        setSlideGenerating(slide.id, false);
+      }
+    },
+    [description, setSlideGenerating, slides, updateSlide]
+  );
+
+  const handlePromptChange = useCallback(
+    (id: string, prompt: string) => {
+      updateSlide(id, { prompt });
+    },
+    [updateSlide]
+  );
+
+  const handleHistorySelect = useCallback(
+    (project: ProjectRecord) => {
+      loadProject(project);
+    },
+    [loadProject]
+  );
+
+  const pendingCount = isGeneratingSlides
+    ? Math.max(0, (outline?.length ?? 0) - slides.length)
+    : 0;
+
+  const leftPanel = (
+    <div className="flex h-full flex-col">
+      <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3">
+        <h1 className="text-base font-semibold text-gray-800">🎨 AI PPT Maker</h1>
+      </div>
+      <HistoryPicker onSelect={handleHistorySelect} />
+      <div className="flex-1 overflow-hidden">
+        <PromptCardList
+          slides={slides}
+          generatingSlideIds={generatingSlideIds}
+          pendingCount={pendingCount}
+          onRegenerate={handleRegenerate}
+          onPromptChange={handlePromptChange}
+        />
+      </div>
+      <ConversationInput onSubmit={handleSubmit} disabled={isLoading} />
     </div>
   );
+
+  const rightPanel = (
+    <div className="flex h-full flex-col">
+      <div className="flex items-center justify-between border-b border-gray-200 bg-white px-4 py-2">
+        <span className="text-sm text-gray-500">
+          {slides.length > 0 ? `${slides.length} 张幻灯片` : ""}
+        </span>
+        <ExportButton slides={slides} title={description || "演示文稿"} />
+      </div>
+      <ThumbnailStrip
+        slides={slides}
+        selectedIndex={selectedSlideIndex}
+        onSelect={selectSlide}
+      />
+      <SlidePreview
+        slide={currentSlide}
+        onUpdateSlide={updateSlide}
+      />
+    </div>
+  );
+
+  return <SplitLayout left={leftPanel} right={rightPanel} />;
 }
